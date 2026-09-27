@@ -1,0 +1,40 @@
+{
+  "name": "tunitrip-ai",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc -b --force",
+    "lint": "oxlint",
+    "smoke": "vite build --ssr scripts/smoke.tsx --outDir .smoke --logLevel warn && node .smoke/smoke.js",
+    "db:seed": "vite build --ssr scripts/generate-seed.ts --outDir .smoke --logLevel warn && node .smoke/generate-seed.js",
+    "db:embed": "vite build --ssr scripts/embed-places.ts --outDir .smoke --logLevel warn && node .smoke/embed-places.js",
+    "db:verify-rag": "vite build --ssr scripts/verify-retrieval.ts --outDir .smoke --logLevel warn && node .smoke/verify-retrieval.js",
+    "verify:nova": "vite build --ssr scripts/verify-nova.ts --outDir .smoke --logLevel warn && node .smoke/verify-nova.js",
+    "verify": "npm run typecheck && npm run lint && npm run smoke"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.117.2",
+    "framer-motion": "^13.4.4",
+    "lucide-react": "^1.48.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "react-router-dom": "^7.18.4"
+  },
+  "devDependencies": {
+    "@google/genai": "^2.24.0",
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/node": "^24.13.3",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.7",
+    "@vitejs/plugin-react": "^6.1.1",
+    "oxlint": "^1.81.0",
+    "tailwindcss": "^4.3.3",
+    "typescript": "~6.0.2",
+    "vite": "^8.3.0"
+  },
+  "description": "TuniTrip AI - discover Tunisia with NOVA, your AI travel companion."
+}
