@@ -119,6 +119,7 @@ export function createGeminiProvider(options: GeminiProviderOptions): LLMProvide
               name: call.name,
               args: call.arguments,
             },
+            ...(call.thoughtSignature ? { thoughtSignature: call.thoughtSignature } : {}),
           })),
         })
         contents.push({
@@ -151,11 +152,18 @@ export function createGeminiProvider(options: GeminiProviderOptions): LLMProvide
         throw new LLMError(classifyGeminiError(detail), detail)
       }
 
-      const toolCalls: LLMToolCall[] = (response.functionCalls ?? []).map((call) => ({
+      const responseParts = response.candidates?.[0]?.content?.parts ?? []
+      const toolCalls: LLMToolCall[] = (response.functionCalls ?? []).map((call, index) => {
+        const signature = (
+          responseParts[index] as Part & { thoughtSignature?: string } | undefined
+        )?.thoughtSignature
+        return {
         id: call.id ?? null,
+        ...(signature ? { thoughtSignature: signature } : {}),
         name: call.name ?? '',
         arguments: (call.args ?? {}) as Record<string, unknown>,
-      }))
+        }
+      })
 
       return {
         text: (response.text ?? '').trim(),

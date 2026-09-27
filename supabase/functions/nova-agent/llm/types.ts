@@ -26,6 +26,8 @@ export interface LLMToolDefinition {
 export interface LLMToolCall {
   /** Provider correlation id, when the provider issues one. */
   id: string | null
+  /** Gemini's signed reasoning marker, required when replaying tool calls. */
+  thoughtSignature?: string
   name: string
   arguments: Record<string, unknown>
   /**
