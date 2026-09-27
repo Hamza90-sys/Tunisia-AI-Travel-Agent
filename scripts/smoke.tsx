@@ -21,7 +21,7 @@ import LoginPage from '../src/pages/Auth/Login'
 import NotFoundPage from '../src/pages/NotFound'
 import PlannerPage from '../src/pages/Planner'
 import ReservationsPage from '../src/pages/Reservations'
-import SignupPage from '../src/pages/Auth/Signup'
+import AuthCallbackPage from '../src/pages/Auth/Callback'
 import TripPage from '../src/pages/Trip'
 
 import {
@@ -49,7 +49,17 @@ import {
 import { matchPlaces } from '../src/lib/supabase/queries'
 import { resolveNovaEndpoint, streamNovaReply } from '../src/lib/nova/client'
 import {
-  isQuotaExhausted,
+  isConversationId,
+  selectHistoryWindow,
+  toGeminiContents,
+} from '../supabase/functions/nova-agent/history'
+import {
+  HISTORY_CHAR_BUDGET,
+  HISTORY_MESSAGE_LIMIT,
+} from '../supabase/functions/nova-agent/config'
+import {
+  isDailyQuotaExhausted,
+  isRateLimited,
   isRetryableProviderError,
   runNovaAgent,
 } from '../supabase/functions/nova-agent/agent'
@@ -60,6 +70,13 @@ import {
   searchPlacesDeclaration,
   validateSearchPlacesArgs,
 } from '../supabase/functions/nova-agent/tools'
+import { resolveProvider } from '../supabase/functions/nova-agent/llm'
+import { toolNames } from '../supabase/functions/nova-agent/tools/registry'
+import { searchPlacesTool } from '../supabase/functions/nova-agent/tools/places'
+import { calculateBudget } from '../supabase/functions/nova-agent/engines/budget'
+import { buildItinerary } from '../supabase/functions/nova-agent/engines/itinerary'
+import { optimizeRoute } from '../supabase/functions/nova-agent/engines/route'
+import { readTripProfile } from '../supabase/functions/nova-agent/profile'
 import { PLACE_CATEGORIES } from '../src/types'
 import type { NovaServerEvent } from '../src/lib/nova/events'
 import { DEMO_RESERVATIONS, DEMO_TRIP, PLACES } from '../src/data'
@@ -102,8 +119,10 @@ const ROUTES: { path: string; name: string; Page: ComponentType; expect: string 
   { path: '/trip', name: 'Trip (loading)', Page: TripPage, expect: 'shimmer-sweep' },
   { path: '/discover', name: 'Discover', Page: DiscoverPage, expect: 'Discover Tunisia' },
   { path: '/reservations', name: 'Reservations', Page: ReservationsPage, expect: 'shimmer-sweep' },
-  { path: '/login', name: 'Login', Page: LoginPage, expect: 'Sign in' },
-  { path: '/signup', name: 'Signup', Page: SignupPage, expect: 'Create account' },
+  { path: '/login', name: 'Login', Page: LoginPage, expect: 'Continue with Google' },
+  // Stable across both branches: "Finishing your sign-in" while the session is
+  // still resolving, "That sign-in link has expired" once it is known.
+  { path: '/auth/callback', name: 'Auth callback', Page: AuthCallbackPage, expect: 'sign-in' },
   { path: '/nowhere', name: 'NotFound', Page: NotFoundPage, expect: 'leads nowhere' },
 ]
 
@@ -286,8 +305,27 @@ function stubAi(values: number[] | undefined) {
   } as never
 }
 
-function stubDb(result: { data: unknown; error: { message: string } | null }) {
-  return { rpc: async () => result } as never
+/**
+ * Stands in for the Supabase client.
+ *
+ * `rpc` serves the semantic path (`match_places`). `from` serves the keyword
+ * fallback `search_places` reaches for when the embedding provider is down or a
+ * city filter emptied the semantic hits — it is a thenable query builder, which
+ * is what supabase-js returns, and it yields `keywordResult` (empty by default,
+ * so the fallback finding nothing is the tested behaviour).
+ */
+function stubDb(
+  result: { data: unknown; error: { message: string } | null },
+  keywordResult: { data: unknown; error: { message: string } | null } = { data: [], error: null },
+) {
+  const builder: Record<string, unknown> = {}
+  for (const method of ['select', 'eq', 'ilike', 'or', 'in', 'limit', 'order']) {
+    builder[method] = () => builder
+  }
+  builder.maybeSingle = async () => keywordResult
+  builder.then = (resolve: (value: unknown) => unknown) => Promise.resolve(keywordResult).then(resolve)
+
+  return { rpc: async () => result, from: () => builder } as never
 }
 
 async function collect(stream: AsyncGenerator<NovaServerEvent>): Promise<NovaServerEvent[]> {
@@ -297,6 +335,83 @@ async function collect(stream: AsyncGenerator<NovaServerEvent>): Promise<NovaSer
 }
 
 async function runAgentChecks() {
+  console.log('\nNOVA - provider and tool boundaries')
+
+  const providerEnv = {
+    geminiApiKey: 'test-key',
+    model: 'test-model',
+    nvidiaBaseUrl: undefined,
+    nvidiaApiKey: undefined,
+    nvidiaModel: undefined,
+  }
+  expect(
+    'Gemini remains the default provider',
+    resolveProvider({ ...providerEnv, provider: undefined }).id === 'gemini',
+  )
+  expectThrows('NVIDIA cannot be selected without server credentials', () =>
+    resolveProvider({ ...providerEnv, provider: 'nvidia' }),
+  )
+  expect(
+    'provider switching leaves the tool registry unchanged',
+    toolNames().join(',') ===
+      'search_places,get_place_details,optimize_route,build_itinerary,calculate_budget',
+  )
+
+  console.log('\nNOVA - deterministic travel engines')
+
+  const profile = readTripProfile({
+    destination: 'Tunis',
+    durationDays: 3,
+    travelers: 2,
+    pace: 'relaxed',
+    interests: ['history', 'food'],
+  })
+  expect('trip profile keeps stated destination', profile?.destination === 'Tunis')
+  expect('trip profile bounds structured values', profile?.durationDays === 3 && profile.travelers === 2)
+  expect('trip profile discards unknown fields', !('ignoreInstructions' in (profile ?? {})))
+
+  const budget = calculateBudget({
+    travelers: 2,
+    nights: 2,
+    budgetLevel: 'balanced',
+    activityPriceLevels: [1, 2],
+    targetTotalTnd: 1200,
+  })
+  expect('budget is labelled as an estimate in TND', budget.basis === 'estimate' && budget.currency === 'TND')
+  expect('budget calculation is deterministic', budget.totalTnd === calculateBudget({
+    travelers: 2,
+    nights: 2,
+    budgetLevel: 'balanced',
+    activityPriceLevels: [1, 2],
+    targetTotalTnd: 1200,
+  }).totalTnd)
+
+  const routeStops = [
+    { slug: 'a', name: 'A', city: 'Tunis', lat: 36.8, lng: 10.18 },
+    { slug: 'b', name: 'B', city: 'Tunis', lat: 36.81, lng: 10.17 },
+    { slug: 'c', name: 'C', city: 'Tunis', lat: 36.82, lng: 10.19 },
+  ]
+  const route = optimizeRoute(routeStops)
+  expect('route only returns computed distances', route.totalDistanceKm >= 0 && route.legs.length === 2)
+  const itinerary = buildItinerary(
+    routeStops.map((stop) => ({ ...stop, durationMinutes: 90, category: 'history' })),
+    { days: 1, pace: 'balanced' },
+  )
+  expect('itinerary uses deterministic catalogue-shaped stops', itinerary.days[0]?.stops.length === 3)
+
+  const modernEmbedding = Array.from({ length: EMBEDDING_DIM }, (_, index) => (index % 5) + 1)
+  const modernSearch = await searchPlacesTool.execute(
+    { query: 'roman ruins', category: 'history', limit: 3 },
+    {
+      embeddings: { embedQuery: async () => modernEmbedding },
+      db: stubDb({ data: [], error: null }),
+    },
+  )
+  expect(
+    'new search_places uses the injected RAG embedding boundary',
+    modernSearch.ok && modernSearch.source === 'catalogue',
+  )
+
   console.log('\nNOVA — search_places schema')
 
   expect('declaration is named search_places', searchPlacesDeclaration.name === SEARCH_PLACES)
@@ -459,14 +574,25 @@ async function runAgentChecks() {
   // Verbatim shapes observed from the real API during production verification.
   const dailyQuota =
     '{"error":{"code":429,"message":"Quota exceeded for metric: generate_content_free_tier_requests, limit: 20","status":"RESOURCE_EXHAUSTED","details":[{"violations":[{"quotaId":"GenerateRequestsPerDayPerProjectPerModel-FreeTier"}]}]}}'
+  const perMinute =
+    '{"error":{"code":429,"message":"Quota exceeded for metric: generate_content_free_tier_requests, limit: 15","status":"RESOURCE_EXHAUSTED","details":[{"violations":[{"quotaId":"GenerateRequestsPerMinutePerProjectPerModel-FreeTier"}]}]}}'
   const highDemand =
     '{"error":{"code":503,"message":"This model is currently experiencing high demand.","status":"UNAVAILABLE"}}'
   const notFound = '{"error":{"code":404,"message":"models/x is not found","status":"NOT_FOUND"}}'
 
-  expect('daily quota is recognised as exhausted', isQuotaExhausted(new Error(dailyQuota)))
+  expect('daily quota is recognised as exhausted', isDailyQuotaExhausted(new Error(dailyQuota)))
   expect('daily quota is NOT retried', !isRetryableProviderError(new Error(dailyQuota)))
+
+  // Regression guard: a per-minute limit is also 429 + RESOURCE_EXHAUSTED, and
+  // used to be reported to travellers as 'come back tomorrow'.
+  expect('a per-minute limit is NOT called a daily quota', !isDailyQuotaExhausted(new Error(perMinute)))
+  expect('a per-minute limit is recognised as rate limiting', isRateLimited(new Error(perMinute)))
+  expect('a per-minute limit is NOT retried', !isRetryableProviderError(new Error(perMinute)))
+  expect('a daily quota is not mislabelled as rate limiting', !isRateLimited(new Error(dailyQuota)))
+
   expect('a 503 high-demand error IS retried', isRetryableProviderError(new Error(highDemand)))
-  expect('a 503 is not mistaken for quota', !isQuotaExhausted(new Error(highDemand)))
+  expect('a 503 is not mistaken for quota', !isDailyQuotaExhausted(new Error(highDemand)))
+  expect('a 503 is not mistaken for rate limiting', !isRateLimited(new Error(highDemand)))
   expect('a 404 is not retried', !isRetryableProviderError(new Error(notFound)))
 
   console.log('\nNOVA — client auth header policy')
@@ -532,6 +658,52 @@ async function runAgentChecks() {
     'every hero photograph carries alt text',
     !/<img(?![^>]*\salt=)[^>]*images\/hero/.test(landingHtml),
   )
+
+  console.log('\nNOVA — conversation history')
+
+  expect('a uuid is accepted as a conversation id', isConversationId('3f2504e0-4f89-11d3-9a0c-0305e82c3301'))
+  expect('a non-uuid is rejected before it reaches Postgres', !isConversationId('../../etc/passwd'))
+  expect('an empty id is rejected', !isConversationId(''))
+
+  const transcript = [
+    { role: 'user', content: 'I am in Hammamet.' },
+    { role: 'nova', content: 'Good base for the coast.' },
+    { role: 'system', content: 'NOVA is not connected in this environment yet.' },
+    { role: 'user', content: 'What is nearby?' },
+  ]
+  const windowed = selectHistoryWindow(transcript)
+  expect('system notices are not replayed to the model', windowed.every((r) => r.role !== 'system'))
+  expect('user and assistant turns are kept', windowed.length === 3)
+  expect('chronological order is preserved', windowed[0].content === 'I am in Hammamet.')
+
+  const contents = toGeminiContents(transcript)
+  expect('assistant turns map to the model role', contents[1].role === 'model')
+  expect('traveller turns map to the user role', contents[0].role === 'user')
+  expect(
+    'every replayed turn carries text',
+    contents.every((c) => typeof c.parts?.[0]?.text === 'string'),
+  )
+
+  const many = Array.from({ length: 40 }, (_, index) => ({
+    role: index % 2 === 0 ? 'user' : 'nova',
+    content: `turn ${index}`,
+  }))
+  expect(
+    'history is capped by message count',
+    selectHistoryWindow(many).length <= HISTORY_MESSAGE_LIMIT,
+  )
+  expect('the cap keeps the most recent turns', selectHistoryWindow(many).at(-1)?.content === 'turn 39')
+
+  const verbose = Array.from({ length: 10 }, (_, index) => ({
+    role: index % 2 === 0 ? 'user' : 'nova',
+    content: 'x'.repeat(2000),
+  }))
+  const trimmed = selectHistoryWindow(verbose)
+  expect(
+    'history is capped by character budget',
+    trimmed.reduce((total, row) => total + row.content.length, 0) <= HISTORY_CHAR_BUDGET,
+  )
+  expect('the character cap still leaves the latest turn', trimmed.length > 0)
 
   console.log('\nNOVA — credential-free client behaviour')
 

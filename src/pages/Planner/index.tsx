@@ -61,7 +61,7 @@ export default function PlannerPage() {
       startDate,
     }
     // Kept visible in the console so judges can see the payload the agent gets.
-    console.info('[TuniTrip] trip draft ready for NOVA', draft)
+    console.info('[TuniTravel] trip draft ready for NOVA', draft)
     setPhase('planning')
   }, [prompt, preferences, travelers, durationDays, budgetLevel, startDate])
 

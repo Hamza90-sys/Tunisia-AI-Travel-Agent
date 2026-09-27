@@ -43,17 +43,27 @@ anon key in `.env.local`.
 
 ## Auth configuration
 
-- **Email/password** is the only provider the UI uses today. It is on by default.
-- For a frictionless demo, turn **off** *Authentication → Providers → Email →
-  Confirm email*. With confirmation on, `signUp` returns no session and the UI
-  correctly asks the traveller to check their inbox.
-- `handle_new_user()` copies `full_name` from the sign-up metadata into
-  `public.profiles`, so a profile row always exists for a signed-in user.
+- **Google is the only provider the UI uses.** There is no email/password path
+  in the codebase, so the Email provider can be switched off entirely.
+- Enable it in three places, once:
+  1. *Google Cloud console → Credentials → OAuth 2.0 Client ID (Web)* with the
+     authorised redirect URI `https://<project-ref>.supabase.co/auth/v1/callback`
+  2. *Supabase → Authentication → Providers → Google* — paste the client ID and
+     secret, enable
+  3. *Supabase → Authentication → URL Configuration* — add your site URL and
+     `http://localhost:5173` to the redirect allow-list
+- `handle_new_user()` copies `full_name` out of `raw_user_meta_data`, which is
+  where Google's OAuth response puts the display name, so a profile row always
+  exists for a signed-in user. The avatar is read from the session's
+  `user_metadata.avatar_url` in the client rather than copied into `profiles`.
+- Until step 2 is done the button reports the provider's own error. It never
+  pretends to sign anyone in.
 
 ## Regenerating the seed
 
-`supabase/seed.sql` is generated from `src/data/places.ts`, which is also what
-the UI falls back to when Supabase is not configured. Edit the TypeScript
+`supabase/seed.sql` is generated from `src/data/places.ts`, which is a seed
+source only — the UI never reads it, so the catalogue you see in the app is
+always whatever is in Postgres. Edit the TypeScript
 catalogue, then:
 
 ```bash
@@ -152,11 +162,14 @@ the security model end to end: the anon role cannot select from
 `place_embeddings`, yet `match_places` still returns ranked results.
 
 Retrieval is reached from the app through `matchPlaces()` in
-`src/lib/supabase/queries.ts`, which returns the usual
-`{ data, error, source }` envelope. It falls back to keyword filtering on the
-local catalogue when Supabase is absent, when the RPC errors, **and when
-`place_embeddings` is empty** — otherwise an un-run pipeline would make NOVA
-believe Tunisia has no beaches.
+`src/lib/supabase/queries.ts`, which returns the usual `{ data, error }`
+envelope. It has **no keyword fallback**: when Supabase is absent it returns an
+error, and when `place_embeddings` is empty it returns no rows.
+
+That is deliberate. A keyword fallback labelled as semantic search would hide an
+un-run embedding pipeline behind plausible-looking results, and "the retrieval
+index is empty" is something the operator needs to see, not something the
+product should paper over.
 
 ## Data model
 
@@ -169,6 +182,7 @@ auth.users
          │           └── itinerary_items ──► places
          ├── reservations ──► places, trips
          ├── saved_places ──► places
+         ├── reviews ──► places, trips       (public once is_published)
          └── nova_conversations            (+ provider_interaction_id)
                └── nova_messages           (+ tool_calls, tool_results)
 
@@ -182,6 +196,20 @@ from the browser; see **Semantic retrieval** above.
 `places` is a public, read-only catalogue. Everything else is owner-scoped:
 trip children are protected through `public.owns_trip(trip_id)`, so guessing an
 itinerary id gets you nothing.
+
+`reviews` is the one table with a public read *and* a client write: anyone may
+read a row once `is_published` is true, and a signed-in traveller may write,
+edit and delete their own. `is_published` cannot be set from the client at all —
+the `reviews_guard_publication` trigger forces it back to its previous value
+whenever the caller is `anon` or `authenticated`, so the RLS policy cannot be
+sidestepped by an UPDATE that flips the flag.
+
+**Nothing seeds `reviews`.** `supabase/seed.sql` covers the catalogue only. The
+landing page's testimonial section reads this table and renders an empty state
+until real travellers write real reviews — inventing testimonials is the one
+thing a travel product must never do. If the migration has not been applied,
+`fetchReviews()` treats the missing relation as "no reviews" rather than an
+error, so an un-migrated environment shows the same empty state.
 
 `nova_conversations` and `nova_messages` are not written yet. They are shaped
 for the Gemini Interactions API: because that API keeps conversation state

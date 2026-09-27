@@ -18,9 +18,9 @@ const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY?.trim()
 
 export const isSupabaseConfigured = Boolean(supabaseUrl && supabaseAnonKey)
 
-export type TuniTripClient = SupabaseClient<Database>
+export type TuniTravelClient = SupabaseClient<Database>
 
-export const supabase: TuniTripClient | null =
+export const supabase: TuniTravelClient | null =
   supabaseUrl && supabaseAnonKey
     ? createClient<Database>(supabaseUrl, supabaseAnonKey, {
         auth: {
@@ -29,13 +29,13 @@ export const supabase: TuniTripClient | null =
           detectSessionInUrl: true,
         },
         global: {
-          headers: { 'x-application-name': 'tunitrip-ai' },
+          headers: { 'x-application-name': 'tunitravel' },
         },
       })
     : null
 
 /** Use inside code paths that genuinely cannot continue without Supabase. */
-export function requireSupabase(): TuniTripClient {
+export function requireSupabase(): TuniTravelClient {
   if (!supabase) {
     throw new Error(
       'Supabase is not configured. Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to .env.local.',

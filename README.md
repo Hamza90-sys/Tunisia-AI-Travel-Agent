@@ -2,9 +2,18 @@
 
 > What if visiting Tunisia was as simple as talking to a local?
 
-A premium AI travel platform for Tunisia. Travellers describe the week they
-want; **NOVA**, the AI companion, builds the route, the timings and the places —
-and rewrites any of it when asked.
+We help travellers discover places in Tunisia and start planning a trip from a
+natural-language request. Our prototype, **TuniTrip AI**, provides a Tunisia
+catalogue, discovery pages, a planner, trip and reservation views, and **NOVA**,
+an AI travel companion. We use Gemini for NOVA's responses and query embeddings,
+then use Supabase pgvector retrieval to ground place recommendations in the
+catalogue. We tested the routes and data-driven components with the SSR smoke
+suite, where those checks pass; the full suite currently stops at an agent
+database mock boundary (`db.from is not a function`). Configured environments
+can also run end-to-end RAG and NOVA persistence checks. Current limitations:
+itinerary generation, trip writes, reservations, booking providers,
+availability and maps are not fully connected. Next step: connect grounded
+retrieval to itinerary generation and persist the resulting trip data.
 
 **This repository is Step 1: the production foundation.** Architecture, design
 system, NOVA's visual identity, app shell, routing, Supabase backend and the
@@ -81,8 +90,8 @@ npm run db:verify-rag -- "historic Roman sites near Tunis"
 
 `db:embed` skips any place whose `content_hash` is unchanged, so re-running it
 costs nothing. Until it has run, `place_embeddings` is empty and `matchPlaces()`
-falls back to keyword search over the local catalogue — the app works either
-way.
+returns nothing — which is the point. There is no keyword fallback dressed up as
+semantic search, so an un-run pipeline is visible rather than disguised.
 
 Backend setup lives in [`supabase/README.md`](supabase/README.md).
 
@@ -205,11 +214,28 @@ supabase/
 | `/planner` | AI trip planner |
 | `/trip` | Trip dashboard |
 | `/discover` | Discover Tunisia (`?category=beach` is shareable) |
-| `/reservations` | My reservations |
-| `/login`, `/signup` | Authentication |
+| `/reservations` | My reservations (sign-in required) |
+| `/login` | Sign in with Google |
+| `/auth/callback` | Where Google returns the traveller |
 
 Pages are code-split; auth routes render outside `AppShell` because they own the
-viewport.
+viewport. `/trip` and `/reservations` render a traveller's own records, so both
+sit behind `RequireAuth`, which offers the Google CTA in place of an empty
+shell.
+
+### Authentication
+
+**Google is the only identity provider.** There is no email field, no password
+field, no sign-up form and no reset flow anywhere in this codebase —
+`src/lib/supabase/auth.ts` exposes `signInWithGoogle` and nothing else, and the
+smoke suite fails if a `type="password"` input reappears on any auth surface.
+
+One button, `<GoogleButton />`, is the single code path into an account. It is
+rendered in the header, the hero, the footer, the sign-in route and the global
+`<AuthModal />` (opened through `useAuthModal()` so a visitor is never routed
+away from what they were reading).
+
+Enabling the provider is a one-time dashboard step — see `.env.example`.
 
 ### Data flow
 
@@ -217,12 +243,17 @@ Components never import fixtures or talk to Supabase directly. Every read goes
 through `src/lib/supabase/queries.ts` and returns one envelope:
 
 ```ts
-{ data, error, source: 'supabase' | 'local' }
+{ data, error }
 ```
 
-Each query falls back to the local catalogue, so a missing key or a dropped
-conference wifi degrades to a working demo instead of a blank page. Row →
-domain translation lives in `mappers.ts`; the UI only ever sees camelCase
+**There is no local fallback.** An empty table renders an empty state and a
+failed request renders an error state, because a product that silently
+substitutes sample data for a broken backend is lying to whoever is looking at
+it. `src/data/places.ts` still exists as the seed source for `db:seed` and
+`db:embed`, and `src/data/index.ts` deliberately does not re-export it so no
+page can reach it by accident.
+
+Row → domain translation lives in `mappers.ts`; the UI only ever sees camelCase
 domain models.
 
 ### Responsive

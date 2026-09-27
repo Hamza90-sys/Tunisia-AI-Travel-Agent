@@ -28,7 +28,7 @@ const FEATURES: Feature[] = [
  */
 export function FeatureStrip() {
   return (
-    <section id="about" className="border-y border-hairline bg-page" aria-label="What TuniTrip offers">
+    <section id="about" className="border-y border-hairline bg-page" aria-label="What TuniTravel offers">
       <Container size="wide">
         <motion.ul
           initial="hidden"

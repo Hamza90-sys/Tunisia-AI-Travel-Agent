@@ -4,6 +4,7 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { LogOut, Menu, Search, X } from 'lucide-react'
 
 import { Logo } from './Logo'
+import { GoogleButton, UserMenu } from '@/components/auth'
 import { Container } from '@/components/ui'
 import { useAuth, useLockBodyScroll, useScrolled } from '@/hooks'
 import { ROUTES, cn } from '@/lib/utils'
@@ -98,34 +99,8 @@ export function Navbar() {
             <Search className="size-[18px]" strokeWidth={1.7} aria-hidden />
           </button>
 
-          {isAuthenticated ? (
-            <>
-              <span className="px-2 text-sm text-body">{displayName}</span>
-              <button
-                type="button"
-                onClick={() => void signOut()}
-                className="inline-flex h-10 items-center gap-2 rounded-full px-4 text-sm text-body transition-colors duration-300 hover:bg-ivory-200 hover:text-forest-900"
-              >
-                <LogOut className="size-4" aria-hidden />
-                Sign out
-              </button>
-            </>
-          ) : (
-            <>
-              <NavLink
-                to={ROUTES.login}
-                className="inline-flex h-10 items-center rounded-full px-4 text-[15px] text-body transition-colors duration-300 hover:bg-ivory-200 hover:text-forest-900"
-              >
-                Log In
-              </NavLink>
-              <NavLink
-                to={ROUTES.signup}
-                className="inline-flex h-10 items-center rounded-full bg-forest-800 px-5 text-[15px] font-medium text-ivory-50 transition-all duration-300 hover:bg-forest-900 hover:shadow-hairline"
-              >
-                Get Started
-              </NavLink>
-            </>
-          )}
+          {/* Google is the only way in, so there is no log-in / sign-up pair. */}
+          {isAuthenticated ? <UserMenu /> : <GoogleButton size="md" />}
         </div>
 
         {/* -------------------------------------------------- mobile right */}
@@ -239,22 +214,7 @@ function MobileSheet({
                   </button>
                 </>
               ) : (
-                <>
-                  <NavLink
-                    to={ROUTES.signup}
-                    onClick={onClose}
-                    className="inline-flex h-12 items-center justify-center rounded-full bg-forest-800 text-[15px] font-medium text-ivory-50"
-                  >
-                    Get Started
-                  </NavLink>
-                  <NavLink
-                    to={ROUTES.login}
-                    onClick={onClose}
-                    className="inline-flex h-12 items-center justify-center rounded-full border border-hairline-strong text-[15px] text-forest-900"
-                  >
-                    Log In
-                  </NavLink>
-                </>
+                <GoogleButton size="lg" fullWidth />
               )}
             </div>
           </Container>

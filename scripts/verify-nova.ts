@@ -304,6 +304,121 @@ async function main() {
       check('user B cannot write into user A’s conversation', hijack.error !== null, 'insert unexpectedly succeeded')
     }
 
+    /* --- Multi-turn conversation --------------------------------------- */
+    section('Multi-turn conversation (real semantic continuity)')
+
+    const turn1 = await callAgent(
+      endpoint,
+      anonKey!,
+      { message: 'I am in Hammamet.' },
+      userA.accessToken,
+    )
+    const turn1Done = doneEvent(turn1.events)
+    const threadId =
+      turn1Done?.type === 'done' ? turn1Done.conversationId : null
+
+    check('turn 1 opened a persisted conversation', Boolean(threadId))
+    check('turn 1 produced an answer', Boolean(firstText(turn1.events)))
+
+    if (threadId) {
+      const turn2 = await callAgent(
+        endpoint,
+        anonKey!,
+        {
+          message: 'What historical places should I visit nearby?',
+          conversationId: threadId,
+        },
+        userA.accessToken,
+      )
+
+      const turn2Text = firstText(turn2.events) ?? ''
+      const turn2Tools = turn2.events
+        .filter((event): event is Extract<NovaServerEvent, { type: 'tool' }> => event.type === 'tool')
+        .map((event) => event.summary)
+        .join(' ')
+      const turn2All = `${turn2Text} ${turn2Tools}`
+
+      check('turn 2 produced an answer', turn2Text.length > 0)
+      check(
+        'turn 2 stayed in the same conversation',
+        doneEvent(turn2.events)?.type === 'done' &&
+          (doneEvent(turn2.events) as { conversationId: string | null }).conversationId === threadId,
+      )
+
+      /*
+       * The real test. Turn 2 never says "Hammamet" — it says "nearby". Only a
+       * model that received turn 1 can resolve that, so naming Hammamet (or
+       * searching for it) proves history actually reached Gemini. A 200 alone
+       * would prove nothing.
+       */
+      check(
+        'turn 2 resolved "nearby" using turn 1 context',
+        /hammamet/i.test(turn2All),
+        turn2All.slice(0, 140),
+      )
+
+      const stored = await userA.client
+        .from('nova_messages')
+        .select('role')
+        .eq('conversation_id', threadId)
+      check('all four turns persisted', (stored.data ?? []).length === 4, `rows=${(stored.data ?? []).length}`)
+
+      /* --- Cross-user and anonymous access to that thread --------------- */
+      section('Conversation ownership')
+
+      const hijack = await callAgent(
+        endpoint,
+        anonKey!,
+        { message: 'What did I just tell you?', conversationId: threadId },
+        userB!.accessToken,
+      )
+      const hijackError = firstError(hijack.events)
+
+      check(
+        'user B cannot continue user A’s conversation',
+        hijackError?.code === 'conversation_not_found',
+        hijackError?.code,
+      )
+      check('the refusal yields no answer', firstText(hijack.events) === null)
+      check(
+        'the refusal does not reveal that the conversation exists',
+        !/(exists|belongs|another user|permission|forbidden|owner)/i.test(hijackError?.message ?? ''),
+        hijackError?.message,
+      )
+
+      const anonThread = await callAgent(endpoint, anonKey!, {
+        message: 'What did I just tell you?',
+        conversationId: threadId,
+      })
+      const anonThreadDone = doneEvent(anonThread.events)
+      const anonThreadText = firstText(anonThread.events) ?? ''
+
+      check(
+        'anonymous cannot attach to a persisted conversation',
+        anonThreadDone?.type === 'done' &&
+          anonThreadDone.conversationId === null &&
+          anonThreadDone.persisted === false,
+      )
+      check(
+        'no history leaks to an anonymous caller',
+        !/hammamet/i.test(anonThreadText),
+        anonThreadText.slice(0, 120),
+      )
+    }
+
+    const bogusThread = await callAgent(
+      endpoint,
+      anonKey!,
+      { message: 'hello', conversationId: 'not-a-uuid' },
+      userA.accessToken,
+    )
+    check(
+      'a malformed conversationId fails cleanly',
+      firstError(bogusThread.events)?.code === 'conversation_not_found',
+      firstError(bogusThread.events)?.code,
+    )
+    check('a malformed conversationId never reaches Gemini', firstText(bogusThread.events) === null)
+
     /* --- Anonymous behaviour ------------------------------------------- */
     section('Anonymous request')
     const anon = await callAgent(endpoint, anonKey!, { message: PROMPT })
@@ -354,11 +469,20 @@ async function main() {
       rejectedAtGateway || badTokenError !== null,
       `status=${badToken.status} error=${badTokenError?.code ?? 'none'}`,
     )
+    /*
+     * Off the gateway (dev proxy), a broken JWT breaks every Supabase call, so
+     * the turn dies somewhere in the agent. Exactly where varies: usually the
+     * grounding guard (retrieval_error), but a model call can hit a per-minute
+     * limit first (rate_limited) or fail outright (provider_error). All of
+     * those are correct, safe endings — the invariants that must always hold
+     * are asserted separately above: no answer, and no persistence.
+     */
+    const safeFailures = ['retrieval_error', 'rate_limited', 'provider_error', 'quota_exceeded']
     check(
       rejectedAtGateway
         ? 'gateway rejects the malformed JWT before the function runs (401)'
-        : 'agent converts the retrieval failure into retrieval_error',
-      rejectedAtGateway || badTokenError?.code === 'retrieval_error',
+        : 'agent ends the turn on a safe failure rather than answering',
+      rejectedAtGateway || safeFailures.includes(badTokenError?.code ?? ''),
       badTokenError?.code,
     )
     check(

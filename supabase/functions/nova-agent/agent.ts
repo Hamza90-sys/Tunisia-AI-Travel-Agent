@@ -23,6 +23,7 @@ import {
   MODEL_RETRY_BASE_MS,
   resolveNovaModel,
 } from './config.ts'
+import { loadConversationHistory } from './history.ts'
 import { NOVA_SYSTEM_INSTRUCTION } from './prompt.ts'
 import {
   SEARCH_PLACES,
@@ -79,7 +80,11 @@ function userFacing(code: NovaErrorCode): string {
     case 'provider_error':
       return 'NOVA could not reach its language model. Try again in a moment.'
     case 'quota_exceeded':
-      return 'NOVA has reached its daily request limit for today. It will work again after the quota resets.'
+      return 'Nova is temporarily unavailable because today’s AI usage limit has been reached. Please try again later.'
+    case 'rate_limited':
+      return 'Nova is handling a lot of requests right now. Please try again in a moment.'
+    case 'conversation_not_found':
+      return 'That conversation is no longer available. Send a new message to start a fresh one.'
     case 'retrieval_error':
       return 'NOVA could not search the place catalogue just now.'
     case 'timeout':
@@ -137,8 +142,37 @@ export async function* runNovaAgent(
       },
     )
 
+    /* --- Who is asking --------------------------------------------------- */
+    /*
+     * Resolved once, here, rather than again at persistence time: history
+     * loading and saving both need it, and it is one round-trip either way.
+     * An anon-key JWT carries no user, which is what makes anonymous callers
+     * read-nothing and save-nothing without any special case.
+     */
+    const viewerId = await resolveViewerId(db, env.authorization)
+
+    /* --- Conversation history -------------------------------------------- */
+    const requestedConversationId = body.conversationId ?? null
+    let history: Content[] = []
+    let conversationId: string | null = null
+
+    if (requestedConversationId && viewerId) {
+      const lookup = await loadConversationHistory(db, requestedConversationId)
+      if (!lookup.ok) {
+        // Not ours, or not a conversation at all. Fail before spending a model
+        // call or a retrieval, and say nothing about which of the two it was.
+        throw new AgentError('conversation_not_found', 'conversation unavailable')
+      }
+      history = lookup.contents
+      conversationId = requestedConversationId
+    } else if (requestedConversationId && !viewerId) {
+      // A signed-out caller holding a stale id from a previous session. There
+      // is nothing for them to read, so start fresh rather than error.
+      console.warn('[nova-agent] ignoring conversationId from an unauthenticated caller')
+    }
+
     /* --- The tool-calling loop ------------------------------------------- */
-    const contents: Content[] = [{ role: 'user', parts: [{ text: message }] }]
+    const contents: Content[] = [...history, { role: 'user', parts: [{ text: message }] }]
     const recordedCalls: RecordedCall[] = []
     const recordedResults: SearchPlacesToolResponse[] = []
     let answer = ''
@@ -170,10 +204,12 @@ export async function* runNovaAgent(
         )
       } catch (error) {
         console.error(`[nova-agent] Gemini call failed: ${describe(error)}`)
-        throw new AgentError(
-          isQuotaExhausted(error) ? 'quota_exceeded' : 'provider_error',
-          'generateContent failed',
-        )
+        const code: NovaErrorCode = isDailyQuotaExhausted(error)
+          ? 'quota_exceeded'
+          : isRateLimited(error)
+            ? 'rate_limited'
+            : 'provider_error'
+        throw new AgentError(code, 'generateContent failed')
       }
 
       const calls: FunctionCall[] = response.functionCalls ?? []
@@ -295,8 +331,8 @@ export async function* runNovaAgent(
 
     /* --- Persistence ------------------------------------------------------ */
     const persistence = await persistExchange(db, {
-      authorization: env.authorization,
-      conversationId: body.conversationId ?? null,
+      viewerId,
+      conversationId,
       tripId: body.tripId ?? null,
       userMessage: message,
       assistantMessage: answer,
@@ -328,31 +364,49 @@ function toResponsePart(call: FunctionCall, response: SearchPlacesToolResponse):
   }
 }
 
-/**
- * True when the provider says we are out of quota for the day rather than
- * momentarily rate limited.
- *
- * Both arrive as HTTP 429, but only one is worth retrying. The free tier caps
- * gemini-3.8-flash at 20 requests per day, and its error helpfully suggests
- * 'retry in 51s' — which is wrong for a per-day quota. Retrying that just adds
- * latency before the same failure.
- */
-export function isQuotaExhausted(error: unknown): boolean {
+/** Pulls the provider's HTTP code and gRPC status out of an SDK error. */
+function providerStatus(error: unknown): { code: number | null; status: string } {
   const message = describe(error)
-  return /PerDay|RESOURCE_EXHAUSTED/i.test(message) && /quota/i.test(message)
+  const code = Number(message.match(/"code"\s*:\s*(\d{3})/)?.[1] ?? Number.NaN)
+  const status = message.match(/"status"\s*:\s*"([A-Z_]+)"/)?.[1] ?? ''
+  return { code: Number.isFinite(code) ? code : null, status }
 }
 
 /**
- * True for provider failures that are worth retrying: rate limits and
- * capacity/5xx responses. A 503 'model is experiencing high demand' is common
- * enough on a popular model that not retrying would drop real conversations
- * mid-loop.
+ * True only when the day's allowance for this model is gone.
+ *
+ * Keyed on `PerDay`, which appears in the quotaId of a daily violation
+ * (`GenerateRequestsPerDayPerProjectPerModel-FreeTier`) and nowhere else.
+ *
+ * This used to also accept a bare `RESOURCE_EXHAUSTED`, which a *per-minute*
+ * limit returns too — so a sixty-second hiccup was reported to travellers as
+ * "come back tomorrow". The marker has to be the daily one specifically.
+ */
+export function isDailyQuotaExhausted(error: unknown): boolean {
+  return /PerDay/i.test(describe(error))
+}
+
+/** A momentary limit: right code, but the allowance returns in seconds. */
+export function isRateLimited(error: unknown): boolean {
+  if (isDailyQuotaExhausted(error)) return false
+  const { code, status } = providerStatus(error)
+  return code === 429 || status === 'RESOURCE_EXHAUSTED'
+}
+
+/**
+ * True only for failures where retrying can plausibly succeed: provider
+ * capacity (5xx) and transport faults.
+ *
+ * Deliberately excludes every 429. Both flavours of quota error are left to
+ * fail fast — retrying them burns more of the same allowance that just ran
+ * out, which is the opposite of helpful.
  */
 export function isRetryableProviderError(error: unknown): boolean {
-  if (isQuotaExhausted(error)) return false
-  const message = describe(error)
-  if (/(429|500|502|503|504)/.test(message)) return true
-  return /UNAVAILABLE|RESOURCE_EXHAUSTED|INTERNAL|DEADLINE_EXCEEDED|fetch failed/i.test(message)
+  if (isDailyQuotaExhausted(error) || isRateLimited(error)) return false
+  const { code, status } = providerStatus(error)
+  if (code !== null && code >= 500) return true
+  if (/UNAVAILABLE|INTERNAL|DEADLINE_EXCEEDED/.test(status)) return true
+  return /fetch failed|ECONNRESET|ETIMEDOUT|network/i.test(describe(error))
 }
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -380,12 +434,32 @@ async function callModelWithRetry<T>(
   throw lastError
 }
 
+/**
+ * The authenticated user behind this request, or null.
+ *
+ * An anon-key JWT is a valid project token with no user attached, so this
+ * returns null for anonymous callers without treating them as an error.
+ */
+async function resolveViewerId(
+  db: SupabaseClient<Database>,
+  authorization: string | null,
+): Promise<string | null> {
+  if (!authorization) return null
+  try {
+    const { data } = await db.auth.getUser()
+    return data?.user?.id ?? null
+  } catch {
+    return null
+  }
+}
+
 function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
 interface PersistInput {
-  authorization: string | null
+  /** Resolved once by the caller; null for an anonymous request. */
+  viewerId: string | null
   conversationId: string | null
   tripId: string | null
   userMessage: string
@@ -410,15 +484,12 @@ async function persistExchange(
   db: SupabaseClient<Database>,
   input: PersistInput,
 ): Promise<{ conversationId: string | null; persisted: boolean }> {
-  if (!input.authorization) {
+  const userId = input.viewerId
+  if (!userId) {
     return { conversationId: null, persisted: false }
   }
 
   try {
-    const { data: userData } = await db.auth.getUser()
-    const userId = userData?.user?.id
-    if (!userId) return { conversationId: null, persisted: false }
-
     let conversationId = input.conversationId
 
     if (!conversationId) {

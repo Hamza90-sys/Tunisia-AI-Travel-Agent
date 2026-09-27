@@ -1,5 +1,5 @@
 {
-  "name": "tunitrip-ai",
+  "name": "tunitravel",
   "private": true,
   "version": "0.0.0",
   "type": "module",
@@ -14,7 +14,8 @@
     "db:embed": "vite build --ssr scripts/embed-places.ts --outDir .smoke --logLevel warn && node .smoke/embed-places.js",
     "db:verify-rag": "vite build --ssr scripts/verify-retrieval.ts --outDir .smoke --logLevel warn && node .smoke/verify-retrieval.js",
     "verify:nova": "vite build --ssr scripts/verify-nova.ts --outDir .smoke --logLevel warn && node .smoke/verify-nova.js",
-    "verify": "npm run typecheck && npm run lint && npm run smoke"
+    "verify": "npm run typecheck && npm run lint && npm run smoke",
+    "verify:nim": "vite build --ssr scripts/verify-nim.ts --outDir .smoke --logLevel warn && node --env-file=.env.local .smoke/verify-nim.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.117.2",
@@ -36,5 +37,5 @@
     "typescript": "~6.0.2",
     "vite": "^8.3.0"
   },
-  "description": "TuniTrip AI - discover Tunisia with NOVA, your AI travel companion."
+  "description": "TuniTravel - discover Tunisia with NOVA, your AI travel companion."
 }

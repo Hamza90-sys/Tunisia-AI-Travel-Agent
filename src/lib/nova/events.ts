@@ -22,8 +22,12 @@ export type NovaErrorCode =
   | 'bad_request'
   | 'unauthorized'
   | 'provider_error'
+  | 'provider_unavailable'
   | 'quota_exceeded'
+  | 'rate_limited'
+  | 'conversation_not_found'
   | 'retrieval_error'
+  | 'tool_error'
   | 'timeout'
   | 'internal_error'
 

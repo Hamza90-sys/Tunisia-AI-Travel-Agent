@@ -1,7 +1,9 @@
 import { Link } from 'react-router-dom'
 
 import { Logo } from './Logo'
+import { GoogleButton } from '@/components/auth'
 import { Container } from '@/components/ui'
+import { useAuth } from '@/hooks'
 import { APP_NAME, ROUTES } from '@/lib/utils'
 
 const COLUMNS = [
@@ -21,13 +23,6 @@ const COLUMNS = [
       { label: 'History', to: `${ROUTES.discover}?category=history` },
     ],
   },
-  {
-    title: 'Account',
-    links: [
-      { label: 'Log in', to: ROUTES.login },
-      { label: 'Get started', to: ROUTES.signup },
-    ],
-  },
 ]
 
 /**
@@ -37,6 +32,8 @@ const COLUMNS = [
  * bottom padding clears the fixed mobile tab bar.
  */
 export function Footer() {
+  const { status } = useAuth()
+
   return (
     <footer className="mt-auto bg-forest-900 text-ivory-100">
       <Container size="wide" className="pb-24 pt-16 md:py-20">
@@ -47,6 +44,40 @@ export function Footer() {
               Tunisia, planned in conversation. NOVA learns what you like, builds the route and
               keeps the whole journey in one place.
             </p>
+          </div>
+
+          {/*
+            Account is a single Google action rather than a log-in / sign-up
+            pair, because there is only one door.
+          */}
+          <div>
+            <p className="text-[11px] font-medium uppercase tracking-[0.2em] text-terracotta-300">
+              Account
+            </p>
+            {status === 'authenticated' ? (
+              <ul className="mt-4 space-y-2.5">
+                <li>
+                  <Link
+                    to={ROUTES.trip}
+                    className="text-sm text-ivory-100/70 transition-colors hover:text-ivory-50"
+                  >
+                    Your dashboard
+                  </Link>
+                </li>
+                <li>
+                  <Link
+                    to={ROUTES.planner}
+                    className="text-sm text-ivory-100/70 transition-colors hover:text-ivory-50"
+                  >
+                    Start a new trip
+                  </Link>
+                </li>
+              </ul>
+            ) : (
+              <div className="mt-4">
+                <GoogleButton size="sm" tone="onDark" />
+              </div>
+            )}
           </div>
 
           {COLUMNS.map((column) => (

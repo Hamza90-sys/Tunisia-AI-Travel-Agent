@@ -15,6 +15,16 @@
 export const NOVA_MODEL_DEFAULT = 'gemini-3.8-flash'
 
 /**
+ * Default model for the NVIDIA NIM provider.
+ *
+ * Kept separate from NOVA_MODEL_DEFAULT because the two namespaces are not
+ * interchangeable — sending a Gemini model id to NIM is an instant 404, which
+ * is exactly what happened when both providers shared one default.
+ * Overridable with NIM_MODEL.
+ */
+export const NIM_MODEL_DEFAULT = 'meta/llama-3.1-8b-instruct'
+
+/**
  * Resolved conversational model.
  *
  * Overridable with the server-side `NOVA_MODEL` variable (no VITE_ prefix, so
@@ -57,3 +67,23 @@ export const MODEL_RETRY_ATTEMPTS = 3
 
 /** First backoff step; doubles per attempt. */
 export const MODEL_RETRY_BASE_MS = 700
+
+/**
+ * Most recent persisted messages replayed to the model as context.
+ *
+ * Twelve is six exchanges: enough for the referential follow-ups travellers
+ * actually make ("what about nearby?", "is that walkable?") without dragging a
+ * whole session into every request. History is replayed as plain turns, so
+ * this costs input tokens only — and no extra model call, because nothing is
+ * summarised.
+ */
+export const HISTORY_MESSAGE_LIMIT = 12
+
+/**
+ * Character ceiling for replayed history.
+ *
+ * A second, independent bound: twelve short turns and twelve long ones cost
+ * very different amounts, and NOVA's answers can run to several paragraphs.
+ * The oldest turns are dropped until the window fits.
+ */
+export const HISTORY_CHAR_BUDGET = 8000

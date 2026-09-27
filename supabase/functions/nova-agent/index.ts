@@ -13,7 +13,7 @@
  * and SUPABASE_ANON_KEY are injected by the platform. There is deliberately no
  * service-role key here — the agent works entirely under the caller's own JWT.
  */
-import { runNovaAgent } from './agent.ts'
+import { runNovaAgent } from './orchestrator.ts'
 import type {
   NovaAgentRequestBody,
   NovaServerEvent,
@@ -68,6 +68,12 @@ Deno.serve(async (request: Request): Promise<Response> => {
     supabaseAnonKey: Deno.env.get('SUPABASE_ANON_KEY'),
     authorization: request.headers.get('Authorization'),
     model: Deno.env.get('NOVA_MODEL'),
+    llmProvider: Deno.env.get('NOVA_LLM_PROVIDER'),
+    // NIM_* is the documented name; NVIDIA_* is accepted as an alias so an
+    // environment configured before the rename keeps working.
+    nvidiaBaseUrl: Deno.env.get('NIM_BASE_URL') ?? Deno.env.get('NVIDIA_BASE_URL'),
+    nvidiaApiKey: Deno.env.get('NIM_API_KEY') ?? Deno.env.get('NVIDIA_API_KEY'),
+    nvidiaModel: Deno.env.get('NIM_MODEL') ?? Deno.env.get('NVIDIA_MODEL'),
   }
 
   const encoder = new TextEncoder()

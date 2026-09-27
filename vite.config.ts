@@ -9,7 +9,7 @@ import type { Plugin } from 'vite'
 const NOVA_DEV_PATH = '/api/nova'
 
 /** Module the dev server runs — the same core the edge function deploys. */
-const AGENT_MODULE = '/supabase/functions/nova-agent/agent.ts'
+const AGENT_MODULE = '/supabase/functions/nova-agent/orchestrator.ts'
 
 /**
  * Development transport for the NOVA agent.
@@ -88,6 +88,11 @@ function novaDevProxy(env: Record<string, string>): Plugin {
               supabaseAnonKey: env.VITE_SUPABASE_ANON_KEY,
               authorization: request.headers.authorization ?? null,
               model: env.NOVA_MODEL,
+              llmProvider: env.NOVA_LLM_PROVIDER,
+              // NIM_* is the documented name; NVIDIA_* is an accepted alias.
+              nvidiaBaseUrl: env.NIM_BASE_URL || env.NVIDIA_BASE_URL,
+              nvidiaApiKey: env.NIM_API_KEY || env.NVIDIA_API_KEY,
+              nvidiaModel: env.NIM_MODEL || env.NVIDIA_MODEL,
             },
             body,
           )) {

@@ -453,7 +453,7 @@ async function runLive(plan: PlanEntry[]): Promise<RunTotals> {
 /* --- Entry point ----------------------------------------------------------- */
 
 async function main(): Promise<void> {
-  console.log(`\nTuniTrip AI — embedding pipeline`)
+  console.log(`\nTuniTravel — embedding pipeline`)
   console.log(`Source of truth: src/data/places.ts (${PLACES.length} places)\n`)
 
   const plan = await buildPlan()

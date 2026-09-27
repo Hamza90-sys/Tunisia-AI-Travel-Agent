@@ -42,7 +42,7 @@ const rows = PLACES.map((place) =>
 ).map((row) => `  (${row})`)
 
 const sql = `-- =============================================================================
--- TuniTrip AI — catalogue seed
+-- TuniTravel — catalogue seed
 --
 -- GENERATED FILE — do not edit by hand.
 -- Source: src/data/places.ts   Regenerate: npm run db:seed

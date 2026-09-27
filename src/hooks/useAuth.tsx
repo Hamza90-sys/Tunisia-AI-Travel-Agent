@@ -5,9 +5,8 @@ import type { Session, User } from '@supabase/supabase-js'
 import {
   fetchProfile,
   isSupabaseConfigured,
-  signInWithEmail,
+  signInWithGoogle as startGoogleSignIn,
   signOut as signOutRequest,
-  signUpWithEmail,
   supabase,
 } from '@/lib/supabase'
 import type { ProfileRow } from '@/types/database'
@@ -22,23 +21,50 @@ interface AuthContextValue {
   /** False until Supabase keys are present — the UI says so rather than lying. */
   isConfigured: boolean
   displayName: string
-  signIn: (email: string, password: string) => Promise<string | null>
-  signUp: (email: string, password: string, fullName: string) => Promise<string | null>
+  /** Google profile picture, when the provider supplied one. */
+  avatarUrl: string | null
+  /** True while the OAuth redirect is being started. */
+  isSigningIn: boolean
+  /**
+   * Starts the Google redirect. Resolves with an error message when the
+   * handshake could not be started; on success the browser navigates away.
+   */
+  signInWithGoogle: (redirectTo?: string) => Promise<string | null>
   signOut: () => Promise<void>
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null)
 
+/** Google puts the picture under one of these keys depending on the flow. */
+function readAvatar(user: User | null, profile: ProfileRow | null): string | null {
+  const meta = user?.user_metadata as Record<string, unknown> | undefined
+  const candidate = meta?.avatar_url ?? meta?.picture
+  if (typeof candidate === 'string' && candidate.length > 0) return candidate
+  return profile?.avatar_url ?? null
+}
+
+function readFullName(user: User | null, profile: ProfileRow | null): string | null {
+  const stored = profile?.full_name?.trim()
+  if (stored) return stored
+  const meta = user?.user_metadata as Record<string, unknown> | undefined
+  const candidate = meta?.full_name ?? meta?.name
+  if (typeof candidate === 'string' && candidate.trim()) return candidate.trim()
+  return null
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null)
   const [profile, setProfile] = useState<ProfileRow | null>(null)
   const [status, setStatus] = useState<AuthStatus>(isSupabaseConfigured ? 'loading' : 'anonymous')
+  const [isSigningIn, setIsSigningIn] = useState(false)
 
   useEffect(() => {
     if (!supabase) return
 
     let active = true
 
+    // `detectSessionInUrl` is on, so a return from Google is already exchanged
+    // for a session by the time this resolves.
     supabase.auth.getSession().then(({ data }) => {
       if (!active) return
       setSession(data.session ?? null)
@@ -48,6 +74,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const { data: subscription } = supabase.auth.onAuthStateChange((_event, nextSession) => {
       setSession(nextSession)
       setStatus(nextSession ? 'authenticated' : 'anonymous')
+      if (nextSession) setIsSigningIn(false)
     })
 
     return () => {
@@ -72,13 +99,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [session?.user.id])
 
-  const signIn = useCallback(async (email: string, password: string) => {
-    const { error } = await signInWithEmail(email, password)
-    return error
-  }, [])
-
-  const signUp = useCallback(async (email: string, password: string, fullName: string) => {
-    const { error } = await signUpWithEmail(email, password, fullName)
+  const signInWithGoogle = useCallback(async (redirectTo?: string) => {
+    setIsSigningIn(true)
+    const { error } = await startGoogleSignIn(redirectTo)
+    if (error) setIsSigningIn(false)
     return error
   }, [])
 
@@ -98,12 +122,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       profile,
       status,
       isConfigured: isSupabaseConfigured,
-      displayName: profile?.full_name?.trim() || fallbackName,
-      signIn,
-      signUp,
+      displayName: readFullName(user, profile) ?? fallbackName,
+      avatarUrl: readAvatar(user, profile),
+      isSigningIn,
+      signInWithGoogle,
       signOut,
     }
-  }, [session, profile, status, signIn, signUp, signOut])
+  }, [session, profile, status, isSigningIn, signInWithGoogle, signOut])
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
 }
